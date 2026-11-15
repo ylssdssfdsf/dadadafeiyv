@@ -4,7 +4,9 @@ on:
   push:
     branches: [main, master]
     paths:
+      - 'dafeiyu-src.zip'
       - 'app/**'
+      - 'dafeiyu-app/**'
       - 'build.gradle.kts'
       - 'settings.gradle.kts'
       - 'gradle/**'
@@ -18,31 +20,48 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
           cache: gradle
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install SDK packages
+      - name: Install Android SDK
         run: |
-          yes | sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools" > /dev/null
+          set -e
+          SDK="$RUNNER_TEMP/android-sdk"
+          mkdir -p "$SDK/cmdline-tools" "$SDK/licenses" "$SDK/unpacked"
+          curl -fsSL --retry 3 -o /tmp/cmdtools.zip \
+            "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+          unzip -q /tmp/cmdtools.zip -d "$SDK/unpacked"
+          SRC="$SDK/unpacked/cmdline-tools"
+          if [ ! -d "$SRC" ]; then SRC=$(find "$SDK/unpacked" -mindepth 1 -maxdepth 1 -type d | head -1); fi
+          mv "$SRC" "$SDK/cmdline-tools/latest"
+          printf '%s\n' '8933bad161af4178b1185d1a37fbf41ea5269c55' 'd56f5187479451eabf01fb78af6dfcb131a6481e' > "$SDK/licenses/android-sdk-license"
+          printf '%s\n' '84831b9409646a918e30555bab9f0e91a936dea7' > "$SDK/licenses/android-sdk-preview-license"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-35" "build-tools;35.0.0" "platform-tools" > /dev/null
+
+      - name: Unpack source bundle
+        run: |
+          set -e
+          unzip -q dafeiyu-src.zip -d .
+          test -f gradlew
+          chmod +x gradlew
 
       - name: Build debug APK
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -56,8 +75,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="build-${{ github.run_number }}"
-          gh release create "$TAG" \
-            app/build/outputs/apk/debug/app-debug.apk \
+          gh release create "$TAG" app/build/outputs/apk/debug/app-debug.apk \
             --title "Dafeiyu APK #${{ github.run_number }}" \
             --notes "Auto-built by GitHub Actions. Download the apk on your phone and tap to install." \
             --target "$GITHUB_SHA"
